@@ -1,4 +1,4 @@
-# main.py
+    # main.py
 import os
 import json
 import asyncio
@@ -107,6 +107,52 @@ def _initial_load():
     invites_state.setdefault("total", {})
 
 _initial_load()
+
+# ---------------- GAMEGEN.LOL API INTEGRATION ----------------
+API_KEY = "Pc1DFIKlQj2-Pe5Mc4wbM6wR"
+API_BASE_URL = "https://gamegen.lol"
+
+# Cache for API responses to avoid repeated calls
+api_cache: Dict[str, tuple[bool, datetime]] = {}  # steamid -> (exists, timestamp)
+API_CACHE_TTL = 300  # 5 minutes
+
+async def check_game_exists_api(steamid: str) -> bool:
+    """Check if game exists on gamegen.lol API with caching"""
+    # Check cache first
+    cached = api_cache.get(steamid)
+    if cached:
+        exists, ts = cached
+        if (datetime.utcnow() - ts).total_seconds() < API_CACHE_TTL:
+            return exists
+    
+    # Make API call
+    try:
+        url = f"{API_BASE_URL}/lua/{steamid}"
+        params = {"key": API_KEY}
+        response = requests.get(url, params=params, timeout=10)
+        exists = response.status_code == 200
+        
+        # Cache result
+        api_cache[steamid] = (exists, datetime.utcnow())
+        return exists
+    except Exception as e:
+        print(f"[API ERROR] Failed to check game {steamid}: {e}")
+        # Cache as failed to avoid repeated calls
+        api_cache[steamid] = (False, datetime.utcnow())
+        return False
+
+async def get_game_link_api(steamid: str) -> Optional[str]:
+    """Get game download link from gamegen.lol API"""
+    try:
+        url = f"{API_BASE_URL}/lua/{steamid}"
+        params = {"key": API_KEY}
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            return f"{url}?key={API_KEY}"
+        return None
+    except Exception as e:
+        print(f"[API ERROR] Failed to get game link {steamid}: {e}")
+        return None
 
 # ---------------- STEAM API WITH CACHE ----------------
 def steam_cache_get(appid: str) -> Optional[dict]:
@@ -513,9 +559,14 @@ async def gen(interaction: discord.Interaction, steamid: str):
     if not limit_ok(interaction.user, role_ids):
         return await interaction.response.send_message("❌ You reached your daily limit.", ephemeral=True)
 
-    # check DB
-    async with file_lock:
-        link = games.get(steamid)
+    # check API first, then fallback to local DB
+    api_link = await get_game_link_api(steamid)
+    if api_link:
+        link = api_link
+    else:
+        # Fallback to local database
+        async with file_lock:
+            link = games.get(steamid)
 
     steam = steam_cache_get(steamid) or get_steam(steamid)
     if not steam:
@@ -614,6 +665,12 @@ async def request_cmd(interaction: discord.Interaction, steamid: str):
     if not limit_ok(interaction.user, role_ids):
         return await interaction.response.send_message("❌ You reached your daily request limit.", ephemeral=True)
 
+    # Check API first to see if game already exists
+    api_exists = await check_game_exists_api(steamid)
+    if api_exists:
+        return await interaction.response.send_message("✅ This game is available via API. Use `/gen` to download it.", ephemeral=True)
+
+    # Check local database as fallback
     async with file_lock:
         if steamid in games:
             return await interaction.response.send_message("✅ This game is already in our database. Use `/gen` to download it.", ephemeral=True)
@@ -806,9 +863,14 @@ async def update_cmd(interaction: discord.Interaction, steamid: str):
     if interaction.channel_id != GEN_CH:
         return await interaction.response.send_message("❌ Use this in the gen channel.", ephemeral=True)
 
+    # Check API first, then local database
+    api_exists = await check_game_exists_api(steamid)
+    local_exists = False
     async with file_lock:
-        if steamid not in games:
-            return await interaction.response.send_message("❌ Game not in database. Use `/request` to ask for it.", ephemeral=True)
+        local_exists = steamid in games
+    
+    if not api_exists and not local_exists:
+        return await interaction.response.send_message("❌ Game not found in API or local database. Use `/request` to ask for it.", ephemeral=True)
 
     steam = steam_cache_get(steamid) or get_steam(steamid)
     if not steam:
@@ -973,66 +1035,4 @@ async def post_new_game_announcement(steamid: str, link: str, added_by_name: str
     steam = steam_cache_get(steamid) or get_steam(steamid)
     if steam:
         title = steam.get("name", steamid)
-        desc = steam.get("short_description", "")
-        price = steam.get("price_overview", {}).get("final_formatted") if steam.get("price_overview") else "Free"
-        genres = ", ".join(g.get("description") for g in steam.get("genres", [])) or "N/A"
-        embed = discord.Embed(
-            title="🎮 New game just added",
-            description=f"**{title}** (`{steamid}`)\n\n{desc}",
-            color=0x57F287,
-            timestamp=datetime.utcnow()
-        )
-        embed.add_field(name="Genres", value=genres, inline=True)
-        embed.add_field(name="Price", value=price, inline=True)
-        embed.add_field(name="Added by", value=added_by_name, inline=True)
-        if steam.get("header_image"):
-            embed.set_image(url=steam["header_image"])
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="View on Steam", url=f"https://store.steampowered.com/app/{steamid}", style=discord.ButtonStyle.link))
-        await ch.send(embed=embed, view=view)
-    else:
-        embed = discord.Embed(
-            title="🎮 New game just added",
-            description=f"`{steamid}`",
-            color=0x57F287,
-            timestamp=datetime.utcnow()
-        )
-        embed.add_field(name="Added by", value=added_by_name, inline=True)
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="View on Steam", url=f"https://store.steampowered.com/app/{steamid}", style=discord.ButtonStyle.link))
-        await ch.send(embed=embed, view=view)
-
-# ---------------- KEEP ALIVE WEB SERVER ----------------
-app = Flask("")
-
-@app.route("/")
-def home():
-    return "I am alive!", 200
-
-@app.route("/ping")
-def ping():
-    return "Pong!", 200
-
-def run_flask():
-    # Flask server will run in a daemon thread
-    app.run(host="0.0.0.0", port=5000)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-
-# ---------------- START (main) ----------------
-if __name__ == "__main__":
-    # Basic sanity checks
-    if not TOKEN:
-        print("[ERROR] TOKEN is not set. Exiting.")
-        raise SystemExit(1)
-
-    # start simple keep-alive webserver (for uptime monitors / Replit)
-    keep_alive()
-
-    try:
-        bot.run(TOKEN)
-    except Exception as e:
-        print("[ERROR] Bot failed to start:", e)
+        desc = steam.get("short_description", ""
