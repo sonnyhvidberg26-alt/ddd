@@ -2,13 +2,38 @@ import os
 import json
 import re
 import gdown
+import requests
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 
 # ---------------- CONFIG ----------------
-DB_FILE = "Ourgames.json"
+API_KEY = "Pc1DFIKlQj2-Pe5Mc4wbM6wR"
+API_BASE_URL = "https://gamegen.lol"
 ALLOWED_EXTENSIONS = (".lua", ".manifest", ".text")
 MAIN_FOLDER = "gamefolder"
+
+# ---------------- API FUNCTIONS ----------------
+def get_game_link_api(steamid: str) -> str:
+    """Get game download link from gamegen.lol API"""
+    try:
+        url = f"{API_BASE_URL}/lua/{steamid}"
+        params = {"key": API_KEY}
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            return f"{url}?key={API_KEY}"
+        return None
+    except Exception as e:
+        print(f"[API ERROR] Failed to get game link {steamid}: {e}")
+        return None
+
+def get_all_games_from_api(steamids: list) -> dict:
+    """Get game links for multiple Steam IDs from API"""
+    games = {}
+    for steamid in steamids:
+        link = get_game_link_api(steamid)
+        if link:
+            games[steamid] = link
+    return games
 
 # ---------------- HELPERS ----------------
 def extract_file_id(link: str) -> str:
@@ -61,14 +86,28 @@ def start_download():
         messagebox.showerror("Error", "Invalid number")
         return
 
-    if not os.path.exists(DB_FILE):
-        messagebox.showerror("Error", f"{DB_FILE} not found.")
+    # Get Steam IDs from user (comma-separated)
+    try:
+        steamids_input = simpledialog.askstring("Steam IDs", "Enter Steam App IDs (comma-separated):")
+        if not steamids_input:
+            messagebox.showerror("Error", "No Steam IDs provided")
+            return
+        
+        steamids = [sid.strip() for sid in steamids_input.split(",")][:num_games]
+        if len(steamids) == 0:
+            messagebox.showerror("Error", "Invalid Steam IDs")
+            return
+    except Exception:
+        messagebox.showerror("Error", "Failed to parse Steam IDs")
         return
 
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        games_db = json.load(f)
+    # Get games from API
+    games_db = get_all_games_from_api(steamids)
+    if not games_db:
+        messagebox.showerror("Error", "No games found on API")
+        return
 
-    links = list(games_db.values())[:num_games]
+    links = list(games_db.values())
 
     failed = []
     for i, link in enumerate(links, 1):
