@@ -481,6 +481,20 @@ async def on_member_join(member: discord.Member):
         except Exception:
             pass
 
+# ---------------- DM MESSAGE HANDLER ----------------
+@bot.event
+async def on_message(message):
+    # Ignore bot's own messages
+    if message.author == bot.user:
+        return
+    
+    # Check if DM and content is "hey"
+    if isinstance(message.channel, discord.DMChannel) and message.content.lower() == "hey":
+        await message.channel.send("nahh")
+    
+    # Process commands (important!)
+    await bot.process_commands(message)
+
 # ---------------- COMMANDS ----------------
 
 # /gen
