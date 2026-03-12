@@ -1,4 +1,4 @@
-    # main.py
+# main.py
 import os
 import json
 import asyncio
@@ -1035,4 +1035,99 @@ async def post_new_game_announcement(steamid: str, link: str, added_by_name: str
     steam = steam_cache_get(steamid) or get_steam(steamid)
     if steam:
         title = steam.get("name", steamid)
-        desc = steam.get("short_description", ""
+        desc = steam.get("short_description", "")
+        price = steam.get("price_overview", {}).get("final_formatted") if steam.get("price_overview") else "Free"
+        genres = ", ".join(g.get("description") for g in steam.get("genres", [])) or "N/A"
+        embed = discord.Embed(
+            title="🎮 New game just added",
+            description=f"**{title}** (`{steamid}`)\n\n{desc}",
+            color=0x57F287,
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="Genres", value=genres, inline=True)
+        embed.add_field(name="Price", value=price, inline=True)
+        embed.add_field(name="Added by", value=added_by_name, inline=True)
+        if steam.get("header_image"):
+            embed.set_image(url=steam["header_image"])
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="View on Steam", url=f"https://store.steampowered.com/app/{steamid}", style=discord.ButtonStyle.link))
+        await ch.send(embed=embed, view=view)
+    else:
+        embed = discord.Embed(
+            title="🎮 New game just added",
+            description=f"`{steamid}`",
+            color=0x57F287,
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="Added by", value=added_by_name, inline=True)
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="View on Steam", url=f"https://store.steampowered.com/app/{steamid}", style=discord.ButtonStyle.link))
+        await ch.send(embed=embed, view=view)
+
+# ---------------- KEEP ALIVE WEB SERVER ----------------
+app = Flask("")
+
+@app.route("/")
+def home():
+    return "I am alive!", 200
+
+@app.route("/ping")
+def ping():
+    return "Pong!", 200
+
+@app.route("/api/game/<appid>")
+def api_game(appid):
+    """Proxy to gamegen.lol API with authentication"""
+    try:
+        url = f"{API_BASE_URL}/lua/{appid}"
+        params = {"key": API_KEY}
+        response = requests.get(url, params=params, timeout=10)
+        return response.json(), response.status_code
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+@app.route("/api/check/<appid>")
+def api_check(appid):
+    """Check if game exists on gamegen.lol API"""
+    try:
+        url = f"{API_BASE_URL}/lua/{appid}"
+        params = {"key": API_KEY}
+        response = requests.get(url, params=params, timeout=10)
+        return {"exists": response.status_code == 200}, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+@app.route("/api/manifest/<appid>")
+def api_manifest(appid):
+    """Get game with manifests parameter"""
+    try:
+        url = f"{API_BASE_URL}/lua/{appid}"
+        params = {"key": API_KEY, "manifests": "1"}
+        response = requests.get(url, params=params, timeout=10)
+        return response.json(), response.status_code
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+def run_flask():
+    # Flask server will run in a daemon thread
+    app.run(host="0.0.0.0", port=5000)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+
+# ---------------- START (main) ----------------
+if __name__ == "__main__":
+    # Basic sanity checks
+    if not TOKEN:
+        print("[ERROR] TOKEN is not set. Exiting.")
+        raise SystemExit(1)
+
+    # start simple keep-alive webserver (for uptime monitors / Replit)
+    keep_alive()
+
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        print("[ERROR] Bot failed to start:", e)
