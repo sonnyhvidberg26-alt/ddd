@@ -52,6 +52,10 @@ PEOPLE_WHO_GEN_FILE = "Peoplewhogen.json"
 PREMIUM_USERS_FILE = "Premium_users.json"
 INVITES_FILE = "invites.json"
 
+# API Configuration
+DEATHSTRUCK_API_KEY = "Pc1DFIKlQj2-Pe5Mc4wbM6wR"
+DEATHSTRUCK_API_BASE = "https://deathstruckapi.lol"
+
 # Roles
 FREEMIUM_ROLE = 1449173422973255771
 PREMIUM_ROLE = 1449396016251146424
@@ -108,52 +112,6 @@ def _initial_load():
 
 _initial_load()
 
-# ---------------- GAMEGEN.LOL API INTEGRATION ----------------
-API_KEY = "Pc1DFIKlQj2-Pe5Mc4wbM6wR"
-API_BASE_URL = "https://gamegen.lol"
-
-# Cache for API responses to avoid repeated calls
-api_cache: Dict[str, tuple[bool, datetime]] = {}  # steamid -> (exists, timestamp)
-API_CACHE_TTL = 300  # 5 minutes
-
-async def check_game_exists_api(steamid: str) -> bool:
-    """Check if game exists on gamegen.lol API with caching"""
-    # Check cache first
-    cached = api_cache.get(steamid)
-    if cached:
-        exists, ts = cached
-        if (datetime.utcnow() - ts).total_seconds() < API_CACHE_TTL:
-            return exists
-    
-    # Make API call
-    try:
-        url = f"{API_BASE_URL}/lua/{steamid}"
-        params = {"key": API_KEY}
-        response = requests.get(url, params=params, timeout=10)
-        exists = response.status_code == 200
-        
-        # Cache result
-        api_cache[steamid] = (exists, datetime.utcnow())
-        return exists
-    except Exception as e:
-        print(f"[API ERROR] Failed to check game {steamid}: {e}")
-        # Cache as failed to avoid repeated calls
-        api_cache[steamid] = (False, datetime.utcnow())
-        return False
-
-async def get_game_link_api(steamid: str) -> Optional[str]:
-    """Get game download link from gamegen.lol API"""
-    try:
-        url = f"{API_BASE_URL}/lua/{steamid}"
-        params = {"key": API_KEY}
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            return f"{url}?key={API_KEY}"
-        return None
-    except Exception as e:
-        print(f"[API ERROR] Failed to get game link {steamid}: {e}")
-        return None
-
 # ---------------- STEAM API WITH CACHE ----------------
 def steam_cache_get(appid: str) -> Optional[dict]:
     entry = steam_cache.get(appid)
@@ -194,6 +152,20 @@ def is_valid_url(url: str) -> bool:
     if not isinstance(url, str):
         return False
     return url.startswith("http://") or url.startswith("https://") or "drive.google.com" in url
+
+def get_deathstruck_manifest(steamid: str) -> Optional[str]:
+    """Fetch manifest download link from deathstruck API."""
+    try:
+        url = f"{DEATHSTRUCK_API_BASE}/lua/{steamid}"
+        params = {"key": DEATHSTRUCK_API_KEY}
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code == 200:
+            # Return the direct download URL
+            return r.url
+        return None
+    except Exception as e:
+        print(f"[DEATHSTRUCK API ERROR] {steamid}: {e}")
+        return None
 
 def build_manifest_view(link: str, steamid: str) -> discord.ui.View:
     view = discord.ui.View()
@@ -559,29 +531,23 @@ async def gen(interaction: discord.Interaction, steamid: str):
     if not limit_ok(interaction.user, role_ids):
         return await interaction.response.send_message("❌ You reached your daily limit.", ephemeral=True)
 
-    # check API first, then fallback to local DB
-    api_link = await get_game_link_api(steamid)
-    if api_link:
-        link = api_link
-    else:
-        # Fallback to local database
-        async with file_lock:
-            link = games.get(steamid)
-
     steam = steam_cache_get(steamid) or get_steam(steamid)
     if not steam:
         return await interaction.response.send_message("❌ Steam ID not found.", ephemeral=True)
 
-    # If not in DB -> auto-request path
-    if not link:
+    # Try to get manifest from deathstruck API
+    deathstruck_link = get_deathstruck_manifest(steamid)
+    
+    if not deathstruck_link:
+        # Game not available on deathstruck API -> auto-request path
         async with file_lock:
             requests_log[steamid] = (interaction.user.id, interaction.user.name, steam)
             request_counts[steamid] = request_counts.get(steamid, 0) + 1
             await save_json_atomic(REQ_COUNTS_FILE, request_counts)
 
         embed = discord.Embed(
-            title="🎮 New Game Request",
-            description=f"**{steam.get('name','Unknown')}** (`{steamid}`) requested by {interaction.user.mention}",
+            title="🎮 Game Not Available",
+            description=f"**{steam.get('name','Unknown')}** (`{steamid}`) is not available in our manifest database.",
             color=0xFEE75C,
             timestamp=datetime.utcnow()
         )
@@ -603,7 +569,7 @@ async def gen(interaction: discord.Interaction, steamid: str):
 
         try:
             await interaction.user.send(
-                f"✅ Your request for **{steam.get('name','Unknown')}** has been sent to our game adders and will be added soon.",
+                f"❌ **{steam.get('name','Unknown')}** is not available in our manifest database. We've notified our team to check availability.",
                 embed=embed,
                 view=view
             )
@@ -612,9 +578,9 @@ async def gen(interaction: discord.Interaction, steamid: str):
         except Exception:
             pass
 
-        return await interaction.response.send_message(f"🎮 Your request for **{steam.get('name','Unknown')}** has been sent to our game adders and will be added soon.", ephemeral=True)
+        return await interaction.response.send_message(f"❌ **{steam.get('name','Unknown')}** is not available. We've been notified and will check availability.", ephemeral=True)
 
-    # Normal path when game exists
+    # Success path - manifest available from deathstruck API
     embed = discord.Embed(
         title=steam.get("name", steamid),
         description=steam.get("short_description", ""),
@@ -629,7 +595,7 @@ async def gen(interaction: discord.Interaction, steamid: str):
         embed.set_image(url=steam["header_image"])
     embed.set_footer(text=datetime.utcnow().strftime("Generated at %I:%M %p UTC"))
 
-    view = build_manifest_view(link, steamid)
+    view = build_manifest_view(deathstruck_link, steamid)
 
     # post publicly
     try:
@@ -665,12 +631,6 @@ async def request_cmd(interaction: discord.Interaction, steamid: str):
     if not limit_ok(interaction.user, role_ids):
         return await interaction.response.send_message("❌ You reached your daily request limit.", ephemeral=True)
 
-    # Check API first to see if game already exists
-    api_exists = await check_game_exists_api(steamid)
-    if api_exists:
-        return await interaction.response.send_message("✅ This game is available via API. Use `/gen` to download it.", ephemeral=True)
-
-    # Check local database as fallback
     async with file_lock:
         if steamid in games:
             return await interaction.response.send_message("✅ This game is already in our database. Use `/gen` to download it.", ephemeral=True)
@@ -863,14 +823,9 @@ async def update_cmd(interaction: discord.Interaction, steamid: str):
     if interaction.channel_id != GEN_CH:
         return await interaction.response.send_message("❌ Use this in the gen channel.", ephemeral=True)
 
-    # Check API first, then local database
-    api_exists = await check_game_exists_api(steamid)
-    local_exists = False
     async with file_lock:
-        local_exists = steamid in games
-    
-    if not api_exists and not local_exists:
-        return await interaction.response.send_message("❌ Game not found in API or local database. Use `/request` to ask for it.", ephemeral=True)
+        if steamid not in games:
+            return await interaction.response.send_message("❌ Game not in database. Use `/request` to ask for it.", ephemeral=True)
 
     steam = steam_cache_get(steamid) or get_steam(steamid)
     if not steam:
@@ -1074,39 +1029,6 @@ def home():
 @app.route("/ping")
 def ping():
     return "Pong!", 200
-
-@app.route("/api/game/<appid>")
-def api_game(appid):
-    """Proxy to gamegen.lol API with authentication"""
-    try:
-        url = f"{API_BASE_URL}/lua/{appid}"
-        params = {"key": API_KEY}
-        response = requests.get(url, params=params, timeout=10)
-        return response.json(), response.status_code
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-@app.route("/api/check/<appid>")
-def api_check(appid):
-    """Check if game exists on gamegen.lol API"""
-    try:
-        url = f"{API_BASE_URL}/lua/{appid}"
-        params = {"key": API_KEY}
-        response = requests.get(url, params=params, timeout=10)
-        return {"exists": response.status_code == 200}, 200
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-@app.route("/api/manifest/<appid>")
-def api_manifest(appid):
-    """Get game with manifests parameter"""
-    try:
-        url = f"{API_BASE_URL}/lua/{appid}"
-        params = {"key": API_KEY, "manifests": "1"}
-        response = requests.get(url, params=params, timeout=10)
-        return response.json(), response.status_code
-    except Exception as e:
-        return {"error": str(e)}, 500
 
 def run_flask():
     # Flask server will run in a daemon thread
