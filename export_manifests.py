@@ -8,7 +8,7 @@ from tkinter import messagebox, simpledialog
 
 # ---------------- CONFIG ----------------
 API_KEY = "Pc1DFIKlQj2-Pe5Mc4wbM6wR"
-API_BASE_URL = "https://gamegen.lol"
+API_BASE_URL = "https://deathstruckapi.lol/devs"
 ALLOWED_EXTENSIONS = (".lua", ".manifest", ".text")
 MAIN_FOLDER = "gamefolder"
 
@@ -132,3 +132,4 @@ btn = tk.Button(root, text="Start Download", command=start_download, width=20, h
 btn.pack(pady=20)
 
 root.mainloop()
+
