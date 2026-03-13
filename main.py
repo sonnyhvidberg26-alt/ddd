@@ -53,7 +53,7 @@ PREMIUM_USERS_FILE = "Premium_users.json"
 INVITES_FILE = "invites.json"
 
 # API Configuration
-DEATHSTRUCK_API_KEY = "Pc1DFIKlQj2-Pe5Mc4wbM6wR"
+DEATHSTRUCK_API_KEY = os.environ.get("DEATHSTRUCK_API_KEY", "Pc1DFIKlQj2-Pe5Mc4wbM6wR")
 DEATHSTRUCK_API_BASE = "https://deathstruckapi.lol"
 
 # Roles
