@@ -13,27 +13,20 @@ ALLOWED_EXTENSIONS = (".lua", ".manifest", ".text")
 MAIN_FOLDER = "gamefolder"
 
 # ---------------- API FUNCTIONS ----------------
-def get_game_link_api(steamid: str) -> str:
-    """Get game download link from gamegen.lol API"""
+def get_all_games_from_api() -> dict:
+    """Get game data from API /devs endpoint"""
     try:
-        url = f"{API_BASE_URL}/lua/{steamid}"
+        url = f"{API_BASE_URL}/devs"
         params = {"key": API_KEY}
         response = requests.get(url, params=params, timeout=10)
         if response.status_code == 200:
-            return f"{url}?key={API_KEY}"
-        return None
+            return response.json()
+        else:
+            print(f"[API ERROR] Failed to fetch from /devs: {response.status_code}")
+            return {}
     except Exception as e:
-        print(f"[API ERROR] Failed to get game link {steamid}: {e}")
-        return None
-
-def get_all_games_from_api(steamids: list) -> dict:
-    """Get game links for multiple Steam IDs from API"""
-    games = {}
-    for steamid in steamids:
-        link = get_game_link_api(steamid)
-        if link:
-            games[steamid] = link
-    return games
+        print(f"[API ERROR] Failed to get games from API: {e}")
+        return {}
 
 # ---------------- HELPERS ----------------
 def extract_file_id(link: str) -> str:
@@ -78,47 +71,55 @@ def download_link(link: str, main_folder: str):
 
 # ---------------- GUI ----------------
 def start_download():
-    try:
-        num_games = int(simpledialog.askstring("Input", "How many games do you want to process?"))
-        if num_games <= 0:
-            raise ValueError
-    except Exception:
-        messagebox.showerror("Error", "Invalid number")
-        return
-
-    # Get Steam IDs from user (comma-separated)
-    try:
-        steamids_input = simpledialog.askstring("Steam IDs", "Enter Steam App IDs (comma-separated):")
-        if not steamids_input:
-            messagebox.showerror("Error", "No Steam IDs provided")
-            return
-        
-        steamids = [sid.strip() for sid in steamids_input.split(",")][:num_games]
-        if len(steamids) == 0:
-            messagebox.showerror("Error", "Invalid Steam IDs")
-            return
-    except Exception:
-        messagebox.showerror("Error", "Failed to parse Steam IDs")
-        return
-
     # Get games from API
-    games_db = get_all_games_from_api(steamids)
+    games_db = get_all_games_from_api()
     if not games_db:
         messagebox.showerror("Error", "No games found on API")
         return
 
-    links = list(games_db.values())
+    # Show available games and let user select
+    game_list = list(games_db.keys())
+    if not game_list:
+        messagebox.showerror("Error", "No games available")
+        return
 
+    # Create selection dialog
+    selected_games = []
+    for game_name in game_list:
+        result = messagebox.askyesno("Select Game", f"Download {game_name}?")
+        if result:
+            selected_games.append(game_name)
+
+    if not selected_games:
+        messagebox.showinfo("Info", "No games selected")
+        return
+
+    # Process selected games
     failed = []
-    for i, link in enumerate(links, 1):
-        print(f"\n[{i}/{num_games}] Processing {link}")
-        folder_path = download_link(link, MAIN_FOLDER)
-        if not folder_path:
-            failed.append(link)
+    for i, game_name in enumerate(selected_games, 1):
+        print(f"\n[{i}/{len(selected_games)}] Processing {game_name}")
+        game_data = games_db[game_name]
+        
+        # Assuming the API returns a download link or folder data
+        if isinstance(game_data, str) and game_data.startswith("http"):
+            # It's a direct link
+            folder_path = download_link(game_data, MAIN_FOLDER)
+            if not folder_path:
+                failed.append(game_name)
+        else:
+            # It's game data, create folder and save
+            folder_path = os.path.join(MAIN_FOLDER, game_name.replace(" ", "_"))
+            os.makedirs(folder_path, exist_ok=True)
+            
+            # Save game data as JSON
+            with open(os.path.join(folder_path, "game_data.json"), "w") as f:
+                json.dump(game_data, f, indent=2)
+            
+            print(f"[SUCCESS] Game data saved: {folder_path}")
 
-    messagebox.showinfo("Done", f"Finished processing {num_games} games.\nFailed: {len(failed)}")
+    messagebox.showinfo("Done", f"Finished processing {len(selected_games)} games.\nFailed: {len(failed)}")
     if failed:
-        print("Failed links:\n" + "\n".join(failed))
+        print("Failed games:\n" + "\n".join(failed))
 
 # ---------------- MAIN WINDOW ----------------
 root = tk.Tk()
