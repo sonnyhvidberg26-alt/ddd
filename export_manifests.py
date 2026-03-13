@@ -14,18 +14,52 @@ MAIN_FOLDER = "gamefolder"
 
 # ---------------- API FUNCTIONS ----------------
 def get_all_games_from_api() -> dict:
-    """Get game data from API /devs endpoint"""
+    """Get game data from API /dev/stats endpoint"""
     try:
-        url = f"{API_BASE_URL}/devs"
+        url = f"{API_BASE_URL}/dev/stats"
         params = {"key": API_KEY}
+        print(f"[DEBUG] Testing URL: {url}")
+        print(f"[DEBUG] Params: {params}")
+        
         response = requests.get(url, params=params, timeout=10)
+        print(f"[DEBUG] Status Code: {response.status_code}")
+        
         if response.status_code == 200:
-            return response.json()
+            try:
+                data = response.json()
+                print(f"[DEBUG] Successfully parsed JSON")
+                
+                # Extract available games from the response
+                # The API returns stats, logs, and requests but not game data directly
+                # We need to use the /lua/{appid} endpoint for each requested game
+                
+                # For now, let's return the requests data which contains game info
+                games = {}
+                if 'requests' in data:
+                    for req in data['requests']:
+                        if req.get('status') == 'added':  # Only include games that are ready
+                            appid = req.get('appid')
+                            game_name = req.get('gameName', f"Game {appid}")
+                            games[appid] = {
+                                'name': game_name,
+                                'appid': appid,
+                                'download_url': f"{API_BASE_URL}/lua/{appid}?key={API_KEY}"
+                            }
+                
+                print(f"[DEBUG] Found {len(games)} available games")
+                return games
+                
+            except Exception as json_error:
+                print(f"[DEBUG] JSON parsing failed: {json_error}")
+                print(f"[DEBUG] Raw response: {response.text[:500]}...")  # Only print the first 500 characters
+                return {}
         else:
-            print(f"[API ERROR] Failed to fetch from /devs: {response.status_code}")
+            print(f"[API ERROR] HTTP {response.status_code}: {response.text[:200]}...")  # Only print the first 200 characters
             return {}
     except Exception as e:
         print(f"[API ERROR] Failed to get games from API: {e}")
+        import traceback
+        print(f"[DEBUG] Traceback: {traceback.format_exc()}")
         return {}
 
 # ---------------- HELPERS ----------------
@@ -78,17 +112,17 @@ def start_download():
         return
 
     # Show available games and let user select
-    game_list = list(games_db.keys())
+    game_list = [(appid, data['name']) for appid, data in games_db.items()]
     if not game_list:
         messagebox.showerror("Error", "No games available")
         return
 
     # Create selection dialog
     selected_games = []
-    for game_name in game_list:
-        result = messagebox.askyesno("Select Game", f"Download {game_name}?")
+    for appid, game_name in game_list:
+        result = messagebox.askyesno("Select Game", f"Download {game_name} (ID: {appid})?")
         if result:
-            selected_games.append(game_name)
+            selected_games.append(appid)
 
     if not selected_games:
         messagebox.showinfo("Info", "No games selected")
@@ -96,26 +130,23 @@ def start_download():
 
     # Process selected games
     failed = []
-    for i, game_name in enumerate(selected_games, 1):
-        print(f"\n[{i}/{len(selected_games)}] Processing {game_name}")
-        game_data = games_db[game_name]
+    for i, appid in enumerate(selected_games, 1):
+        game_data = games_db[appid]
+        game_name = game_data['name']
+        download_url = game_data['download_url']
         
-        # Assuming the API returns a download link or folder data
-        if isinstance(game_data, str) and game_data.startswith("http"):
-            # It's a direct link
-            folder_path = download_link(game_data, MAIN_FOLDER)
-            if not folder_path:
-                failed.append(game_name)
+        print(f"\n[{i}/{len(selected_games)}] Processing {game_name} (ID: {appid})")
+        
+        # Download from the game's URL
+        folder_path = download_link(download_url, MAIN_FOLDER)
+        if not folder_path:
+            failed.append(f"{game_name} ({appid})")
         else:
-            # It's game data, create folder and save
-            folder_path = os.path.join(MAIN_FOLDER, game_name.replace(" ", "_"))
-            os.makedirs(folder_path, exist_ok=True)
-            
-            # Save game data as JSON
-            with open(os.path.join(folder_path, "game_data.json"), "w") as f:
-                json.dump(game_data, f, indent=2)
-            
-            print(f"[SUCCESS] Game data saved: {folder_path}")
+            # Rename folder to game name instead of folder ID
+            new_folder_path = os.path.join(MAIN_FOLDER, game_name.replace(" ", "_").replace("/", "_"))
+            if os.path.exists(folder_path) and not os.path.exists(new_folder_path):
+                os.rename(folder_path, new_folder_path)
+                print(f"[SUCCESS] Game saved: {new_folder_path}")
 
     messagebox.showinfo("Done", f"Finished processing {len(selected_games)} games.\nFailed: {len(failed)}")
     if failed:
